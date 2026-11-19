@@ -1,0 +1,80 @@
+version: '3.8'
+
+services:
+  # Redis Queue Broker
+  redis:
+    image: redis:7-alpine
+    container_name: mediaflow-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: mediaflow-postgres
+    restart: always
+    environment:
+      POSTGRES_DB: mediaflow
+      POSTGRES_USER: mediaflow_user
+      POSTGRES_PASSWORD: mediaflow_secure_password_2026
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mediaflow_user -d mediaflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # FastAPI Backend & FFmpeg Workers
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    container_name: mediaflow-backend
+    restart: always
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8000"
+      REDIS_URL: "redis://redis:6379/0"
+      DATABASE_URL: "postgresql+asyncpg://mediaflow_user:mediaflow_secure_password_2026@postgres:5432/mediaflow"
+      SECRET_KEY: "production-ultra-secure-mediaflow-secret-key-2026"
+      DOWNLOAD_TTL_SECONDS: "3600"
+      MAX_FILE_SIZE_BYTES: "2147483648"
+      WORKER_CONCURRENCY: "4"
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - media_storage:/app/temp_storage
+
+  # Frontend Nginx Container
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    container_name: mediaflow-frontend
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  redis_data:
+  postgres_data:
+  media_storage:
