@@ -1,6 +1,6 @@
 import { MediaMetadata, CreateJobPayload, JobProgress, SystemHealth } from '../types/media';
 
-const API_BASE = '/api';
+const API_BASE = (((import.meta as any).env?.VITE_API_URL || (import.meta as any).env?.VITE_API_BASE_URL || '/api') as string).replace(/\/$/, '');
 
 export class ApiError extends Error {
   status: number;
