@@ -45,8 +45,10 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
         }
       } catch {
         // If text response mentions ECONNREFUSED or proxy error
-        if (text.includes('ECONNREFUSED') || text.includes('proxy error') || response.status === 500 || response.status === 502) {
-          errorDetail = 'Backend server (http://127.0.0.1:8000) is unreachable. Please verify that the FastAPI backend is running.';
+        if (response.status === 405) {
+          errorDetail = 'Backend API is not running on Vercel (405). Vercel only serves the frontend UI. Please connect your backend using VITE_API_URL or deploy the backend to Render/Railway.';
+        } else if (text.includes('ECONNREFUSED') || text.includes('proxy error') || response.status === 500 || response.status === 502) {
+          errorDetail = 'Backend server is unreachable. Please verify that the FastAPI backend is running.';
         } else if (text.length > 0 && text.length < 300) {
           errorDetail = text;
         }
