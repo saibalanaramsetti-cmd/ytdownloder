@@ -161,6 +161,9 @@ class MediaWorker:
                         else:
                             target_format = "bestvideo+bestaudio/best"
 
+                    is_youtube = any(domain in url.lower() for domain in ("youtube.com", "youtu.be"))
+                    cookie_file = get_cookie_file_path()
+
                     primary_opts = {
                         'outtmpl': f"{raw_download_path}.%(ext)s",
                         'progress_hooks': [progress_hook],
@@ -173,7 +176,13 @@ class MediaWorker:
                         'format': target_format,
                         'merge_output_format': target_ext,
                     }
-                    cookie_file = get_cookie_file_path()
+                    if is_youtube and not cookie_file:
+                        primary_opts['extractor_args'] = {
+                            'youtube': {
+                                'player_client': ['android'],
+                                'player_skip': ['webpage', 'configs']
+                            }
+                        }
                     if cookie_file:
                         primary_opts['cookiefile'] = cookie_file
 
@@ -195,13 +204,15 @@ class MediaWorker:
                             'socket_timeout': 30,
                             'retries': 5,
                             'ffmpeg_location': get_ffmpeg_path(),
-                            'extractor_args': {
-                                'youtube': {
-                                    'player_client': ['android', 'ios']
-                                }
-                            },
                             'format': f"{target_format}/18/bestaudio/best",
                         }
+                        if is_youtube:
+                            fallback_opts['extractor_args'] = {
+                                'youtube': {
+                                    'player_client': ['android', 'ios'],
+                                    'player_skip': ['webpage', 'configs']
+                                }
+                            }
                         if cookie_file:
                             fallback_opts['cookiefile'] = cookie_file
                         if shutil.which("node"):

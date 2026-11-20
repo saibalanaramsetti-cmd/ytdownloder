@@ -67,21 +67,34 @@ class MetadataService:
         if shutil.which("node"):
             base_opts['js_runtimes'] = {'node': {}}
 
-        # Mobile clients bypass YouTube's datacenter botguard IP block
-        client_attempts = [
-            None,               # Attempt 1: Standard client (uses cookies if supplied)
-            ['android'],        # Attempt 2: Android client (bypasses bot wall on cloud IPs)
-            ['ios'],            # Attempt 3: iOS client
-            ['mweb'],           # Attempt 4: Mobile Web
-        ]
+        is_youtube = any(domain in url.lower() for domain in ("youtube.com", "youtu.be"))
+
+        # Mobile clients with player_skip avoid the initial HTML webpage request,
+        # bypassing YouTube's BotGuard datacenter checks completely.
+        if not is_youtube:
+            client_attempts = [None]
+        elif cookie_file:
+            client_attempts = [
+                None,
+                {'player_client': ['android'], 'player_skip': ['webpage', 'configs']},
+                {'player_client': ['ios'], 'player_skip': ['webpage', 'configs']},
+            ]
+        else:
+            client_attempts = [
+                {'player_client': ['android'], 'player_skip': ['webpage', 'configs']},
+                {'player_client': ['ios'], 'player_skip': ['webpage', 'configs']},
+                {'player_client': ['mweb'], 'player_skip': ['webpage', 'configs']},
+                {'player_client': ['tv_embedded'], 'player_skip': ['webpage', 'configs']},
+                None,
+            ]
 
         raw_info = None
         last_err = None
 
-        for client_list in client_attempts:
+        for cfg in client_attempts:
             current_opts = dict(base_opts)
-            if client_list:
-                current_opts['extractor_args'] = {'youtube': {'player_client': client_list}}
+            if cfg:
+                current_opts['extractor_args'] = {'youtube': cfg}
 
             try:
                 with yt_dlp.YoutubeDL(current_opts) as ydl:
@@ -90,15 +103,8 @@ class MetadataService:
                     break
             except Exception as e:
                 last_err = e
-                err_text = str(e).lower()
-                print(f"[MetadataService] Attempt with client={client_list} failed: {e}")
-                # If bot detection or client challenge, try the next client
-                if any(x in err_text for x in ["sign in to confirm", "bot", "captcha", "unavailable", "confirm you're not a bot"]):
-                    continue
-                # If it's YouTube, try other clients regardless
-                if "youtube" in url.lower() or "youtu.be" in url.lower():
-                    continue
-                break
+                print(f"[MetadataService] Extraction attempt with cfg={cfg} failed: {e}")
+                continue
 
         if not raw_info:
             if last_err:
@@ -106,8 +112,8 @@ class MetadataService:
                 if "unavailable" in err_msg.lower() or "not available" in err_msg.lower() or "this video is unavailable" in err_msg.lower():
                     raise ValueError("This video is unavailable or has been deleted on YouTube. Please check the video link.")
                 if "sign in to confirm you're not a bot" in err_msg.lower():
-                    raise ValueError("YouTube datacenter verification triggered. Please ensure a valid video URL is entered, or provide YouTube cookies in Render settings.")
-                raise ValueError(f"Failed to extract media information: {err_msg}")
+                    raise ValueError("YouTube datacenter bot protection triggered. Add YOUTUBE_COOKIES in Render Environment Variables or test with another link.")
+                raise ValueError(err_msg)
             raise ValueError("Could not extract media metadata from the provided URL.")
 
         if 'entries' in raw_info and raw_info['entries']:

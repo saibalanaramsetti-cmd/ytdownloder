@@ -44,7 +44,10 @@ def get_cookie_file_path() -> Optional[str]:
     if settings.YOUTUBE_COOKIES_FILE and os.path.exists(settings.YOUTUBE_COOKIES_FILE):
         return settings.YOUTUBE_COOKIES_FILE
     if settings.YOUTUBE_COOKIES:
+        cookie_text = settings.YOUTUBE_COOKIES.strip()
+        if "\\n" in cookie_text and "\n" not in cookie_text:
+            cookie_text = cookie_text.replace("\\n", "\n")
         cookie_path = settings.STORAGE_PATH / "youtube_cookies.txt"
-        cookie_path.write_text(settings.YOUTUBE_COOKIES.strip(), encoding="utf-8")
+        cookie_path.write_text(cookie_text, encoding="utf-8")
         return str(cookie_path)
     return None
