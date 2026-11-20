@@ -203,7 +203,7 @@ class MediaWorker:
                             'socket_timeout': 30,
                             'retries': 5,
                             'ffmpeg_location': get_ffmpeg_path(),
-                            'format': f"{target_format}/18/bestaudio/best",
+                            'format': f"{target_format}/bestvideo+bestaudio/best/18/b",
                         }
                         if is_youtube:
                             fallback_opts['extractor_args'] = {

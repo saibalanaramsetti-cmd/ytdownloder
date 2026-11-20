@@ -61,6 +61,9 @@ class MetadataService:
             'noplaylist': True,
             'socket_timeout': 25,
             'retries': 3,
+            'ignore_no_formats_error': True,
+            'format': 'all/best',
+            'check_formats': None,
         }
         if cookie_file:
             base_opts['cookiefile'] = cookie_file
