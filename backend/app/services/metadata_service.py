@@ -1,8 +1,10 @@
 import asyncio
 import os
+import shutil
 from typing import Dict, Any, List, Optional, Union
 import yt_dlp
 import httpx
+from ..config import settings, get_cookie_file_path
 from ..schemas import MediaInfoResponse, VideoFormatSchema, AudioFormatSchema, SubtitleSchema
 
 def format_duration(seconds: Optional[Union[int, float]]) -> Optional[str]:
@@ -49,8 +51,9 @@ class MetadataService:
 
     @staticmethod
     def _sync_extract(url: str) -> MediaInfoResponse:
-        import shutil
-        ydl_opts = {
+        cookie_file = get_cookie_file_path()
+
+        base_opts = {
             'quiet': True,
             'no_warnings': True,
             'skip_download': True,
@@ -59,193 +62,215 @@ class MetadataService:
             'socket_timeout': 25,
             'retries': 3,
         }
+        if cookie_file:
+            base_opts['cookiefile'] = cookie_file
         if shutil.which("node"):
-            ydl_opts['js_runtimes'] = {'node': {}}
+            base_opts['js_runtimes'] = {'node': {}}
 
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                raw_info = ydl.extract_info(url, download=False)
-        except Exception as primary_err:
-            print(f"[MetadataService] Primary extraction hit {primary_err}. Attempting fallback...")
-            fallback_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'skip_download': True,
-                'noplaylist': True,
-                'socket_timeout': 25,
-                'retries': 3,
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['android', 'web']
-                    }
-                }
-            }
-            with yt_dlp.YoutubeDL(fallback_opts) as ydl:
-                raw_info = ydl.extract_info(url, download=False)
-            if not raw_info:
-                raise ValueError("Could not extract media metadata from the provided URL.")
+        # Mobile clients bypass YouTube's datacenter botguard IP block
+        client_attempts = [
+            None,               # Attempt 1: Standard client (uses cookies if supplied)
+            ['android'],        # Attempt 2: Android client (bypasses bot wall on cloud IPs)
+            ['ios'],            # Attempt 3: iOS client
+            ['mweb'],           # Attempt 4: Mobile Web
+        ]
 
-            if 'entries' in raw_info and raw_info['entries']:
-                raw_info = raw_info['entries'][0]
+        raw_info = None
+        last_err = None
 
-            media_id = str(raw_info.get('id') or 'media')
-            title = str(raw_info.get('title') or 'Unknown Title')
-            duration = raw_info.get('duration')
+        for client_list in client_attempts:
+            current_opts = dict(base_opts)
+            if client_list:
+                current_opts['extractor_args'] = {'youtube': {'player_client': client_list}}
+
+            try:
+                with yt_dlp.YoutubeDL(current_opts) as ydl:
+                    raw_info = ydl.extract_info(url, download=False)
+                if raw_info:
+                    break
+            except Exception as e:
+                last_err = e
+                err_text = str(e).lower()
+                print(f"[MetadataService] Attempt with client={client_list} failed: {e}")
+                # If bot detection or client challenge, try the next client
+                if any(x in err_text for x in ["sign in to confirm", "bot", "captcha", "unavailable", "confirm you're not a bot"]):
+                    continue
+                # If it's YouTube, try other clients regardless
+                if "youtube" in url.lower() or "youtu.be" in url.lower():
+                    continue
+                break
+
+        if not raw_info:
+            if last_err:
+                err_msg = str(last_err)
+                if "unavailable" in err_msg.lower() or "not available" in err_msg.lower() or "this video is unavailable" in err_msg.lower():
+                    raise ValueError("This video is unavailable or has been deleted on YouTube. Please check the video link.")
+                if "sign in to confirm you're not a bot" in err_msg.lower():
+                    raise ValueError("YouTube datacenter verification triggered. Please ensure a valid video URL is entered, or provide YouTube cookies in Render settings.")
+                raise ValueError(f"Failed to extract media information: {err_msg}")
+            raise ValueError("Could not extract media metadata from the provided URL.")
+
+        if 'entries' in raw_info and raw_info['entries']:
+            raw_info = raw_info['entries'][0]
+
+        media_id = str(raw_info.get('id') or 'media')
+        title = str(raw_info.get('title') or 'Unknown Title')
+        duration = raw_info.get('duration')
+        
+        # Thumbnail extraction
+        thumb_candidate = raw_info.get('thumbnail')
+        if not isinstance(thumb_candidate, str) and isinstance(raw_info.get('thumbnails'), list) and raw_info['thumbnails']:
+            last_thumb = raw_info['thumbnails'][-1]
+            thumb_candidate = last_thumb.get('url') if isinstance(last_thumb, dict) else str(last_thumb)
+        thumbnail = str(thumb_candidate) if thumb_candidate and isinstance(thumb_candidate, str) else None
+
+        uploader = raw_info.get('uploader') or raw_info.get('channel') or raw_info.get('artist')
+        channel_url = raw_info.get('uploader_url') or raw_info.get('channel_url')
+        view_count = raw_info.get('view_count')
+        like_count = raw_info.get('like_count')
+        upload_date = str(raw_info.get('upload_date')) if raw_info.get('upload_date') else None
+        extractor = str(raw_info.get('extractor') or 'web')
+        extractor_key = str(raw_info.get('extractor_key') or 'Web')
+        description = str(raw_info.get('description')) if raw_info.get('description') else None
+
+        raw_formats = raw_info.get('formats', [])
+        video_formats: List[VideoFormatSchema] = []
+        audio_formats: List[AudioFormatSchema] = []
+        seen_resolutions = set()
+
+        for f in raw_formats:
+            height = f.get('height')
+            width = f.get('width')
+            vcodec = f.get('vcodec')
+            acodec = f.get('acodec')
+            ext = str(f.get('ext') or 'mp4').lower()
+            filesize = f.get('filesize') or f.get('filesize_approx')
+            fps = f.get('fps')
+            tbr = f.get('tbr')
+
+            has_video = vcodec is not None and vcodec != 'none'
+            has_audio = acodec is not None and acodec != 'none'
+
+            # Safe numeric parsing
+            height_int = int(height) if height and str(height).isdigit() else None
+            width_int = int(width) if width and str(width).isdigit() else None
             
-            # Thumbnail extraction
-            thumb_candidate = raw_info.get('thumbnail')
-            if not isinstance(thumb_candidate, str) and isinstance(raw_info.get('thumbnails'), list) and raw_info['thumbnails']:
-                last_thumb = raw_info['thumbnails'][-1]
-                thumb_candidate = last_thumb.get('url') if isinstance(last_thumb, dict) else str(last_thumb)
-            thumbnail = str(thumb_candidate) if thumb_candidate and isinstance(thumb_candidate, str) else None
+            try:
+                fps_val = float(fps) if fps is not None else None
+            except (ValueError, TypeError):
+                fps_val = None
 
-            uploader = raw_info.get('uploader') or raw_info.get('channel') or raw_info.get('artist')
-            channel_url = raw_info.get('uploader_url') or raw_info.get('channel_url')
-            view_count = raw_info.get('view_count')
-            like_count = raw_info.get('like_count')
-            upload_date = str(raw_info.get('upload_date')) if raw_info.get('upload_date') else None
-            extractor = str(raw_info.get('extractor') or 'web')
-            extractor_key = str(raw_info.get('extractor_key') or 'Web')
-            description = str(raw_info.get('description')) if raw_info.get('description') else None
+            try:
+                tbr_val = float(tbr) if tbr is not None else None
+            except (ValueError, TypeError):
+                tbr_val = None
 
-            raw_formats = raw_info.get('formats', [])
-            video_formats: List[VideoFormatSchema] = []
-            audio_formats: List[AudioFormatSchema] = []
-            seen_resolutions = set()
+            # Video streams
+            if has_video and height_int and height_int >= 144:
+                res_key = f"{height_int}p"
+                if res_key not in seen_resolutions:
+                    seen_resolutions.add(res_key)
+                    
+                    quality_label = f"{height_int}p"
+                    if height_int >= 2160:
+                        quality_label = "4K UHD (2160p)"
+                    elif height_int >= 1440:
+                        quality_label = "2K QHD (1440p)"
+                    elif height_int >= 1080:
+                        quality_label = "Full HD (1080p)"
+                    elif height_int >= 720:
+                        quality_label = "HD (720p)"
 
-            for f in raw_formats:
-                height = f.get('height')
-                width = f.get('width')
-                vcodec = f.get('vcodec')
-                acodec = f.get('acodec')
-                ext = str(f.get('ext') or 'mp4').lower()
-                filesize = f.get('filesize') or f.get('filesize_approx')
-                fps = f.get('fps')
-                tbr = f.get('tbr')
-
-                has_video = vcodec is not None and vcodec != 'none'
-                has_audio = acodec is not None and acodec != 'none'
-
-                # Safe numeric parsing
-                height_int = int(height) if height and str(height).isdigit() else None
-                width_int = int(width) if width and str(width).isdigit() else None
-                
-                try:
-                    fps_val = float(fps) if fps is not None else None
-                except (ValueError, TypeError):
-                    fps_val = None
-
-                try:
-                    tbr_val = float(tbr) if tbr is not None else None
-                except (ValueError, TypeError):
-                    tbr_val = None
-
-                # Video streams
-                if has_video and height_int and height_int >= 144:
-                    res_key = f"{height_int}p"
-                    if res_key not in seen_resolutions:
-                        seen_resolutions.add(res_key)
-                        
-                        quality_label = f"{height_int}p"
-                        if height_int >= 2160:
-                            quality_label = "4K UHD (2160p)"
-                        elif height_int >= 1440:
-                            quality_label = "2K QHD (1440p)"
-                        elif height_int >= 1080:
-                            quality_label = "Full HD (1080p)"
-                        elif height_int >= 720:
-                            quality_label = "HD (720p)"
-
-                        video_formats.append(VideoFormatSchema(
-                            format_id=str(f.get('format_id') or f"{height_int}p"),
-                            ext=ext if ext in ('mp4', 'webm', 'mkv') else 'mp4',
-                            resolution=f"{width_int or '?'}x{height_int}",
-                            height=height_int,
-                            width=width_int,
-                            fps=round(fps_val, 1) if fps_val else None,
-                            filesize=filesize,
-                            filesize_str=format_bytes(filesize),
-                            vcodec=str(vcodec) if vcodec else None,
-                            acodec=str(acodec) if acodec else None,
-                            tbr=round(tbr_val, 1) if tbr_val else None,
-                            quality_label=quality_label,
-                            has_audio=has_audio,
-                            has_video=True
-                        ))
-
-                # Pure audio streams
-                elif has_audio and not has_video:
-                    abr = f.get('abr') or 128
-                    try:
-                        abr_val = float(abr)
-                    except (ValueError, TypeError):
-                        abr_val = 128.0
-
-                    audio_formats.append(AudioFormatSchema(
-                        format_id=str(f.get('format_id') or f"audio_{int(abr_val)}"),
-                        ext=ext if ext in ('mp3', 'm4a', 'opus', 'webm', 'aac', 'flac') else 'mp3',
-                        abr=abr_val,
+                    video_formats.append(VideoFormatSchema(
+                        format_id=str(f.get('format_id') or f"{height_int}p"),
+                        ext=ext if ext in ('mp4', 'webm', 'mkv') else 'mp4',
+                        resolution=f"{width_int or '?'}x{height_int}",
+                        height=height_int,
+                        width=width_int,
+                        fps=round(fps_val, 1) if fps_val else None,
                         filesize=filesize,
                         filesize_str=format_bytes(filesize),
+                        vcodec=str(vcodec) if vcodec else None,
                         acodec=str(acodec) if acodec else None,
-                        quality_label=f"{int(abr_val)} kbps"
+                        tbr=round(tbr_val, 1) if tbr_val else None,
+                        quality_label=quality_label,
+                        has_audio=has_audio,
+                        has_video=True
                     ))
 
-            if not video_formats:
-                video_formats.append(VideoFormatSchema(
-                    format_id="best",
-                    ext="mp4",
-                    resolution="Original High Definition",
-                    quality_label="Best Quality Available",
-                    has_audio=True,
-                    has_video=True
+            # Pure audio streams
+            elif has_audio and not has_video:
+                abr = f.get('abr') or 128
+                try:
+                    abr_val = float(abr)
+                except (ValueError, TypeError):
+                    abr_val = 128.0
+
+                audio_formats.append(AudioFormatSchema(
+                    format_id=str(f.get('format_id') or f"audio_{int(abr_val)}"),
+                    ext=ext if ext in ('mp3', 'm4a', 'opus', 'webm', 'aac', 'flac') else 'mp3',
+                    abr=abr_val,
+                    filesize=filesize,
+                    filesize_str=format_bytes(filesize),
+                    acodec=str(acodec) if acodec else None,
+                    quality_label=f"{int(abr_val)} kbps"
                 ))
-            else:
-                video_formats.sort(key=lambda x: (x.height or 0), reverse=True)
 
-            if not audio_formats:
-                for br in [320, 256, 192, 128]:
-                    audio_formats.append(AudioFormatSchema(
-                        format_id=f"mp3_{br}",
-                        ext="mp3",
-                        abr=float(br),
-                        quality_label=f"MP3 {br} kbps"
-                    ))
+        if not video_formats:
+            video_formats.append(VideoFormatSchema(
+                format_id="best",
+                ext="mp4",
+                resolution="Original High Definition",
+                quality_label="Best Quality Available",
+                has_audio=True,
+                has_video=True
+            ))
+        else:
+            video_formats.sort(key=lambda x: (x.height or 0), reverse=True)
 
-            subtitles: List[SubtitleSchema] = []
-            raw_subs = raw_info.get('subtitles', {})
-            raw_auto_subs = raw_info.get('automatic_captions', {})
+        if not audio_formats:
+            for br in [320, 256, 192, 128]:
+                audio_formats.append(AudioFormatSchema(
+                    format_id=f"mp3_{br}",
+                    ext="mp3",
+                    abr=float(br),
+                    quality_label=f"MP3 {br} kbps"
+                ))
 
-            if isinstance(raw_subs, dict):
-                for lang, tracks in raw_subs.items():
-                    name = str(tracks[0].get('name') or lang).upper() if tracks and isinstance(tracks, list) and isinstance(tracks[0], dict) else str(lang).upper()
-                    subtitles.append(SubtitleSchema(lang=str(lang), name=name, is_auto=False))
+        subtitles: List[SubtitleSchema] = []
+        raw_subs = raw_info.get('subtitles', {})
+        raw_auto_subs = raw_info.get('automatic_captions', {})
 
-            if isinstance(raw_auto_subs, dict):
-                for lang, tracks in raw_auto_subs.items():
-                    if not any(s.lang == lang for s in subtitles):
-                        name = str(tracks[0].get('name') or lang).upper() + " (Auto)" if tracks and isinstance(tracks, list) and isinstance(tracks[0], dict) else str(lang).upper() + " (Auto)"
-                        subtitles.append(SubtitleSchema(lang=str(lang), name=name, is_auto=True))
+        if isinstance(raw_subs, dict):
+            for lang, tracks in raw_subs.items():
+                name = str(tracks[0].get('name') or lang).upper() if tracks and isinstance(tracks, list) and isinstance(tracks[0], dict) else str(lang).upper()
+                subtitles.append(SubtitleSchema(lang=str(lang), name=name, is_auto=False))
 
-            return MediaInfoResponse(
-                id=media_id,
-                title=title,
-                webpage_url=str(raw_info.get('webpage_url') or url),
-                description=description[:300] if description else None,
-                duration=duration,
-                duration_str=format_duration(duration),
-                thumbnail=thumbnail,
-                author=str(uploader) if uploader else None,
-                channel_url=str(channel_url) if channel_url else None,
-                view_count=view_count,
-                like_count=like_count,
-                upload_date=upload_date,
-                extractor=extractor,
-                extractor_key=extractor_key,
-                video_formats=video_formats,
-                audio_formats=audio_formats,
-                subtitles=subtitles[:15],
-            )
+        if isinstance(raw_auto_subs, dict):
+            for lang, tracks in raw_auto_subs.items():
+                if not any(s.lang == lang for s in subtitles):
+                    name = str(tracks[0].get('name') or lang).upper() + " (Auto)" if tracks and isinstance(tracks, list) and isinstance(tracks[0], dict) else str(lang).upper() + " (Auto)"
+                    subtitles.append(SubtitleSchema(lang=str(lang), name=name, is_auto=True))
+
+        return MediaInfoResponse(
+            id=media_id,
+            title=title,
+            webpage_url=str(raw_info.get('webpage_url') or url),
+            description=description[:300] if description else None,
+            duration=duration,
+            duration_str=format_duration(duration),
+            thumbnail=thumbnail,
+            author=str(uploader) if uploader else None,
+            channel_url=str(channel_url) if channel_url else None,
+            view_count=view_count,
+            like_count=like_count,
+            upload_date=upload_date,
+            extractor=extractor,
+            extractor_key=extractor_key,
+            video_formats=video_formats,
+            audio_formats=audio_formats,
+            subtitles=subtitles[:15],
+        )
 
     @staticmethod
     async def _probe_direct_media(url: str) -> Optional[MediaInfoResponse]:

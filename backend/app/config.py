@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Optional
 from pydantic import BaseModel
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -26,6 +27,10 @@ class Settings(BaseModel):
     MAX_FILE_SIZE_BYTES: int = int(os.getenv("MAX_FILE_SIZE_BYTES", str(2 * 1024 * 1024 * 1024))) # 2 GB
     MAX_DURATION_SECONDS: int = int(os.getenv("MAX_DURATION_SECONDS", str(3 * 3600))) # 3 hours
     STORAGE_PATH: Path = STORAGE_DIR
+
+    # YouTube Cookies
+    YOUTUBE_COOKIES: Optional[str] = os.getenv("YOUTUBE_COOKIES")
+    YOUTUBE_COOKIES_FILE: Optional[str] = os.getenv("YOUTUBE_COOKIES_FILE")
     
     # Rate Limiting
     MAX_REQUESTS_PER_MINUTE: int = int(os.getenv("MAX_REQUESTS_PER_MINUTE", "60"))
@@ -34,3 +39,12 @@ class Settings(BaseModel):
     WORKER_CONCURRENCY: int = int(os.getenv("WORKER_CONCURRENCY", "4"))
 
 settings = Settings()
+
+def get_cookie_file_path() -> Optional[str]:
+    if settings.YOUTUBE_COOKIES_FILE and os.path.exists(settings.YOUTUBE_COOKIES_FILE):
+        return settings.YOUTUBE_COOKIES_FILE
+    if settings.YOUTUBE_COOKIES:
+        cookie_path = settings.STORAGE_PATH / "youtube_cookies.txt"
+        cookie_path.write_text(settings.YOUTUBE_COOKIES.strip(), encoding="utf-8")
+        return str(cookie_path)
+    return None

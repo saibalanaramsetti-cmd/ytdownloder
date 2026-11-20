@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 import yt_dlp
 import httpx
-from .config import settings
+from .config import settings, get_cookie_file_path
 from .models import Job
 from .queue import job_queue
 from .services.ffmpeg_service import FFmpegService, get_ffmpeg_path
@@ -173,6 +173,10 @@ class MediaWorker:
                         'format': target_format,
                         'merge_output_format': target_ext,
                     }
+                    cookie_file = get_cookie_file_path()
+                    if cookie_file:
+                        primary_opts['cookiefile'] = cookie_file
+
                     import shutil
                     if shutil.which("node"):
                         primary_opts['js_runtimes'] = {'node': {}}
@@ -193,11 +197,16 @@ class MediaWorker:
                             'ffmpeg_location': get_ffmpeg_path(),
                             'extractor_args': {
                                 'youtube': {
-                                    'player_client': ['android']
+                                    'player_client': ['android', 'ios']
                                 }
                             },
-                            'format': '18/bestaudio/best',
+                            'format': f"{target_format}/18/bestaudio/best",
                         }
+                        if cookie_file:
+                            fallback_opts['cookiefile'] = cookie_file
+                        if shutil.which("node"):
+                            fallback_opts['js_runtimes'] = {'node': {}}
+
                         with yt_dlp.YoutubeDL(fallback_opts) as ydl:
                             ydl.download([url])
 
