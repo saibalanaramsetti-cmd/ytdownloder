@@ -97,3 +97,4 @@ class SystemHealthResponse(BaseModel):
     queue_type: str
     active_jobs: int
     uptime_seconds: float
+    cookies_configured: bool = False

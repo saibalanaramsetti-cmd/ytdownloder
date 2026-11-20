@@ -69,27 +69,26 @@ class MetadataService:
 
         is_youtube = any(domain in url.lower() for domain in ("youtube.com", "youtu.be"))
 
-        # Mobile clients with player_skip avoid the initial HTML webpage request,
-        # bypassing YouTube's BotGuard datacenter checks completely.
         if not is_youtube:
             client_attempts = [None]
         elif cookie_file:
             client_attempts = [
-                None,
-                {'player_client': ['android'], 'player_skip': ['webpage', 'configs']},
-                {'player_client': ['ios'], 'player_skip': ['webpage', 'configs']},
+                None,                              # Standard client with cookies
+                {'player_client': ['android']},     # Android client with cookies
+                {'player_client': ['ios']},         # iOS client with cookies
+                {'player_client': ['mweb']},        # Mobile web with cookies
             ]
         else:
             client_attempts = [
-                {'player_client': ['android'], 'player_skip': ['webpage', 'configs']},
-                {'player_client': ['ios'], 'player_skip': ['webpage', 'configs']},
-                {'player_client': ['mweb'], 'player_skip': ['webpage', 'configs']},
-                {'player_client': ['tv_embedded'], 'player_skip': ['webpage', 'configs']},
-                None,
+                {'player_client': ['android']},     # Android mobile client
+                {'player_client': ['ios']},         # iOS client
+                {'player_client': ['mweb']},        # Mobile web client
+                {'player_client': ['tv_embedded']}, # TV embedded client
+                None,                              # Standard web fallback
             ]
 
         raw_info = None
-        last_err = None
+        all_errs = []
 
         for cfg in client_attempts:
             current_opts = dict(base_opts)
@@ -102,18 +101,18 @@ class MetadataService:
                 if raw_info:
                     break
             except Exception as e:
-                last_err = e
+                all_errs.append(str(e))
                 print(f"[MetadataService] Extraction attempt with cfg={cfg} failed: {e}")
                 continue
 
         if not raw_info:
-            if last_err:
-                err_msg = str(last_err)
-                if "unavailable" in err_msg.lower() or "not available" in err_msg.lower() or "this video is unavailable" in err_msg.lower():
-                    raise ValueError("This video is unavailable or has been deleted on YouTube. Please check the video link.")
-                if "sign in to confirm you're not a bot" in err_msg.lower():
-                    raise ValueError("YouTube datacenter bot protection triggered. Add YOUTUBE_COOKIES in Render Environment Variables or test with another link.")
-                raise ValueError(err_msg)
+            joined_errs = " | ".join(all_errs).lower()
+            if "unavailable" in joined_errs or "this video is unavailable" in joined_errs:
+                raise ValueError("This video is unavailable or has been deleted on YouTube. Please check the video link.")
+            if "sign in to confirm" in joined_errs:
+                raise ValueError("YouTube bot check triggered. Please ensure YOUTUBE_COOKIES is added in Render Environment Variables.")
+            if all_errs:
+                raise ValueError(all_errs[0])
             raise ValueError("Could not extract media metadata from the provided URL.")
 
         if 'entries' in raw_info and raw_info['entries']:
