@@ -164,60 +164,60 @@ class MediaWorker:
                     is_youtube = any(domain in url.lower() for domain in ("youtube.com", "youtu.be"))
                     cookie_file = get_cookie_file_path()
 
-                    primary_opts = {
-                        'outtmpl': f"{raw_download_path}.%(ext)s",
-                        'progress_hooks': [progress_hook],
-                        'quiet': True,
-                        'no_warnings': True,
-                        'noplaylist': True,
-                        'socket_timeout': 30,
-                        'retries': 3,
-                        'ffmpeg_location': get_ffmpeg_path(),
-                        'format': target_format,
-                        'merge_output_format': target_ext,
-                    }
-                    if is_youtube and not cookie_file:
-                        primary_opts['extractor_args'] = {
-                            'youtube': {
-                                'player_client': ['android']
-                            }
-                        }
-                    if cookie_file:
-                        primary_opts['cookiefile'] = cookie_file
+                    if not is_youtube:
+                        client_attempts = [None]
+                    elif cookie_file:
+                        client_attempts = [
+                            {'player_client': ['android']},
+                            {'player_client': ['ios']},
+                            None,
+                            {'player_client': ['mweb']},
+                        ]
+                    else:
+                        client_attempts = [
+                            {'player_client': ['android']},
+                            {'player_client': ['ios']},
+                            {'player_client': ['mweb']},
+                            {'player_client': ['tv_embedded']},
+                            None,
+                        ]
 
-                    import shutil
-                    if shutil.which("node"):
-                        primary_opts['js_runtimes'] = {'node': {}}
+                    download_success = False
+                    last_download_err = None
 
-                    try:
-                        with yt_dlp.YoutubeDL(primary_opts) as ydl:
-                            ydl.download([url])
-                    except Exception as primary_err:
-                        print(f"[Worker-{self.worker_id}] Primary download attempt hit {primary_err}. Attempting fallback...")
-                        fallback_opts = {
+                    for cfg in client_attempts:
+                        opts = {
                             'outtmpl': f"{raw_download_path}.%(ext)s",
                             'progress_hooks': [progress_hook],
                             'quiet': True,
                             'no_warnings': True,
                             'noplaylist': True,
                             'socket_timeout': 30,
-                            'retries': 5,
+                            'retries': 3,
                             'ffmpeg_location': get_ffmpeg_path(),
                             'format': f"{target_format}/bestvideo+bestaudio/best/18/b",
+                            'merge_output_format': target_ext,
                         }
-                        if is_youtube:
-                            fallback_opts['extractor_args'] = {
-                                'youtube': {
-                                    'player_client': ['android', 'ios']
-                                }
-                            }
+                        if cfg and is_youtube:
+                            opts['extractor_args'] = {'youtube': cfg}
                         if cookie_file:
-                            fallback_opts['cookiefile'] = cookie_file
+                            opts['cookiefile'] = cookie_file
+                        import shutil
                         if shutil.which("node"):
-                            fallback_opts['js_runtimes'] = {'node': {}}
+                            opts['js_runtimes'] = {'node': {}}
 
-                        with yt_dlp.YoutubeDL(fallback_opts) as ydl:
-                            ydl.download([url])
+                        try:
+                            with yt_dlp.YoutubeDL(opts) as ydl:
+                                ydl.download([url])
+                            download_success = True
+                            break
+                        except Exception as dl_err:
+                            last_download_err = dl_err
+                            print(f"[Worker-{self.worker_id}] Download attempt with cfg={cfg} failed: {dl_err}")
+                            continue
+
+                    if not download_success:
+                        raise last_download_err or ValueError("Failed to retrieve media stream.")
 
                 await loop.run_in_executor(None, run_ytdlp)
 
