@@ -170,10 +170,12 @@ class MediaWorker:
                         'socket_timeout': 30,
                         'retries': 3,
                         'ffmpeg_location': get_ffmpeg_path(),
-                        'js_runtimes': {'node': {}},
                         'format': target_format,
                         'merge_output_format': target_ext,
                     }
+                    import shutil
+                    if shutil.which("node"):
+                        primary_opts['js_runtimes'] = {'node': {}}
 
                     try:
                         with yt_dlp.YoutubeDL(primary_opts) as ydl:

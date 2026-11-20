@@ -39,26 +39,49 @@ class MetadataService:
             info = await loop.run_in_executor(None, MetadataService._sync_extract, url)
             return info
         except Exception as e:
-            direct_meta = await MetadataService._probe_direct_media(url)
-            if direct_meta:
-                return direct_meta
+            print(f"[MetadataService] Extraction error: {e}")
+            is_direct = any(url.split("?")[0].lower().endswith(ext) for ext in (".mp4", ".mp3", ".webm", ".mkv", ".wav", ".m4a", ".flac"))
+            if is_direct:
+                direct_meta = await MetadataService._probe_direct_media(url)
+                if direct_meta:
+                    return direct_meta
             raise e
 
     @staticmethod
     def _sync_extract(url: str) -> MediaInfoResponse:
+        import shutil
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
             'skip_download': True,
             'extract_flat': False,
             'noplaylist': True,
-            'socket_timeout': 20,
+            'socket_timeout': 25,
             'retries': 3,
-            'js_runtimes': {'node': {}},
         }
+        if shutil.which("node"):
+            ydl_opts['js_runtimes'] = {'node': {}}
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            raw_info = ydl.extract_info(url, download=False)
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                raw_info = ydl.extract_info(url, download=False)
+        except Exception as primary_err:
+            print(f"[MetadataService] Primary extraction hit {primary_err}. Attempting fallback...")
+            fallback_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'skip_download': True,
+                'noplaylist': True,
+                'socket_timeout': 25,
+                'retries': 3,
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['android', 'web']
+                    }
+                }
+            }
+            with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                raw_info = ydl.extract_info(url, download=False)
             if not raw_info:
                 raise ValueError("Could not extract media metadata from the provided URL.")
 
