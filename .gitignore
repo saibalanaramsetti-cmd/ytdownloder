@@ -1,3 +1,7 @@
+# Binaries
+cloudflared.exe
+*.exe
+
 # Python
 __pycache__/
 *.py[cod]
